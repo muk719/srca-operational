@@ -1,0 +1,8 @@
+# ملفات كبيرة غير مطلوبة للنشر
+portal_db.sql
+الملف التشغيلي.pdf
+
+# ملفات النظام
+Thumbs.db
+.DS_Store
+desktop.ini

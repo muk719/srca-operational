@@ -1,0 +1,505 @@
+<?php
+declare(strict_types=1);
+session_start();
+require_once __DIR__ . '/db.php';
+
+function h($v): string {
+    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+}
+
+$msg = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'send_activities') {
+        try {
+            $stmt = pdo()->prepare("INSERT INTO volunteer_activities (program_type,program_name,total,created_by,created_at) VALUES (?,?,?,?,NOW())");
+            $saved = 0;
+            foreach (($_POST['prog_type'] ?? []) as $i => $t) {
+                if (trim($t) === '' && trim($_POST['prog_name'][$i] ?? '') === '') continue;
+                $stmt->execute([$t, $_POST['prog_name'][$i] ?? '', $_POST['prog_total'][$i] ?? '', $_SESSION['op_user_id'] ?? null]);
+                $saved++;
+            }
+            // حفظ بيانات التنوع
+            pdo()->prepare("INSERT INTO volunteer_diversity (ambulance,organizing,humanitarian,environment,media,administrative,total_pct,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,NOW())")
+                 ->execute([$_POST['div_amb']??'', $_POST['div_org']??'', $_POST['div_hum']??'', $_POST['div_env']??'', $_POST['div_med']??'', $_POST['div_adm']??'', $_POST['div_total']??'20%', $_SESSION['op_user_id']??null]);
+            $msg = "تم إرسال $saved برنامج تطوعي وبيانات التنوع للأدمن";
+        } catch (Throwable $e) { $msg = 'خطأ: '.$e->getMessage(); }
+    }
+
+    if ($action === 'send_stats') {
+        try {
+            pdo()->prepare("INSERT INTO volunteer_stats (total_volunteers,participation_rate,total_hours,efficiency_pct,jan,feb,mar,apr,may,jun,jul,aug,sep,oct,nov,dec_m,total_participants,avg_rate,period_total,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())")
+                 ->execute([$_POST['total_vol']??36,$_POST['part_rate']??'36%',$_POST['total_hours']??26,$_POST['eff_pct']??'36%',$_POST['jan']??'%0',$_POST['feb']??'%0',$_POST['mar']??'%0',$_POST['apr']??'%36',$_POST['may']??'%0',$_POST['jun']??'%0',$_POST['jul']??'%0',$_POST['aug']??'%0',$_POST['sep']??'%0',$_POST['oct']??'%0',$_POST['nov']??'%0',$_POST['dec']??'%0',$_POST['total_participants']??1883,$_POST['avg_rate']??50.2,$_POST['period_total']??104.6,$_SESSION['op_user_id']??null]);
+            $msg = 'تم إرسال إحصائيات المتطوعين للأدمن';
+        } catch (Throwable $e) { $msg = 'خطأ: '.$e->getMessage(); }
+    }
+
+    if ($action === 'save_rec') {
+        try {
+            pdo()->prepare("INSERT INTO volunteer_recommendations (rec_main,rec_risks,rec_actions,rec_notes,created_by,created_at) VALUES (?,?,?,?,?,NOW())")
+                 ->execute([$_POST['rec_main']??'',$_POST['rec_risks']??'',$_POST['rec_actions']??'',$_POST['rec_notes']??'',$_SESSION['op_user_id']??null]);
+            $msg = 'تم حفظ التوصيات بنجاح';
+        } catch (Throwable $e) { $msg = 'خطأ: '.$e->getMessage(); }
+    }
+}
+
+$tab = $_GET['tab'] ?? 'activities';
+$lastRec = [];
+try { $lastRec = pdo()->query("SELECT * FROM volunteer_recommendations ORDER BY id DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: []; } catch (Throwable $e) {}
+
+$activitiesData = [
+    ['الإداري','الأعمال الإدارية','إدارة الفرع'],
+    ['التطوع الإسعافي','دعم غرفة العمليات','القيادة والتحكم'],
+    ['تطوع إسعافي','تردي ضيوف الرحمن بمنطقة حلة عمار','جدة عمر'],
+];
+
+$months = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'];
+$monthKeys = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+$monthValues = ['%0','%0','%0','%36','%0','%0','%0','%0','%0','%0','%0','%0'];
+?>
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>إدارة التطوع</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:#f3f4f6;direction:rtl;font-size:13px}
+.page-header{background:#fff;border-bottom:1px solid #e5e7eb;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
+.page-title{font-size:14px;font-weight:700;color:#16a34a}
+.page-sub{font-size:9px;color:#9ca3af}
+.tabs-bar{display:flex;border-bottom:1px solid #e5e7eb;background:#f9fafb;padding:0 10px;overflow-x:auto}
+.tab-link{padding:9px 14px;font-size:12px;font-weight:700;color:#6b7280;border-bottom:2px solid transparent;margin-bottom:-1px;text-decoration:none;white-space:nowrap;display:inline-block}
+.tab-link.active{color:#16a34a;border-bottom-color:#16a34a}
+.tab-link:hover:not(.active){color:#374151}
+.section{padding:14px}
+.main-title{font-size:13px;font-weight:700;color:#374151;text-align:center;padding:8px 16px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:14px}
+
+/* Charts */
+.charts-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+@media(max-width:600px){.charts-row{grid-template-columns:1fr}}
+.chart-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px}
+.chart-card-title{font-size:11px;font-weight:700;color:#374151;text-align:center;margin-bottom:8px}
+.chart-legend{display:flex;justify-content:center;gap:12px;margin-top:6px;flex-wrap:wrap}
+.leg-item{display:flex;align-items:center;gap:4px;font-size:9.5px;color:#374151}
+.leg-box{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+
+/* Tables */
+.tbl-section-title{font-size:12px;font-weight:700;color:#fff;background:#374151;padding:7px 12px;text-align:center;border-radius:6px 6px 0 0}
+.tbl-wrap{overflow-x:auto;border:1px solid #e5e7eb;border-radius:0 0 8px 8px;margin-bottom:14px;background:#fff}
+table{width:100%;border-collapse:collapse;font-size:10.5px}
+th{background:#d1d5db;color:#374151;padding:7px 8px;font-weight:700;text-align:center;white-space:nowrap;border-left:1px solid #e5e7eb}
+th:last-child{border-left:none}
+th.green-th{background:#16a34a;color:#fff}
+th.blue-th{background:#1d4ed8;color:#fff}
+th.red-th{background:#dc2626;color:#fff}
+td{padding:6px 8px;border-bottom:1px solid #f0f0f0;color:#111827;text-align:center;vertical-align:middle;border-left:1px solid #f0f0f0;background:#fff}
+td:last-child{border-left:none}
+tbody tr:nth-child(even) td{background:#f9fafb}
+tbody tr:hover td{background:#f0fdf4}
+tbody tr:last-child td{border-bottom:none}
+td input,td textarea{width:100%;border:none;background:transparent;outline:none;font-family:inherit;font-size:10.5px;color:#111827;text-align:center;resize:none}
+td textarea{min-height:26px;line-height:1.3;text-align:right}
+td input:focus,td textarea:focus{background:#f0fdf4;border-radius:3px}
+.nc{color:#9ca3af;font-size:9px}
+.check-col{color:#16a34a;font-size:14px;font-weight:700}
+
+/* Diversity */
+.diversity-title{font-size:12px;font-weight:700;color:#dc2626;background:#fef2f2;padding:7px 12px;text-align:center;border:1px solid #fca5a5;border-radius:6px 6px 0 0}
+
+/* Stats page */
+.stats-grid{display:grid;grid-template-columns:1fr 240px;gap:14px;align-items:start;margin-bottom:14px}
+@media(max-width:700px){.stats-grid{grid-template-columns:1fr}}
+.donuts-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;align-items:start}
+.donut-wrap{display:flex;flex-direction:column;align-items:center;gap:6px}
+.donut-pct{font-size:13px;font-weight:700;color:#374151;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}
+
+/* Side stats */
+.side-card{border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin-bottom:8px;background:#fff}
+.side-card-title{padding:6px 10px;font-size:10.5px;font-weight:700;text-align:center;border-bottom:1px solid #e5e7eb}
+.side-card-title.red{background:#dc2626;color:#fff}
+.side-card-title.gray{background:#f3f4f6;color:#374151}
+.months-tbl{width:100%;border-collapse:collapse;font-size:10.5px}
+.months-tbl th{background:#f3f4f6;color:#374151;padding:5px 8px;font-weight:700;text-align:center;border:.5px solid #e5e7eb}
+.months-tbl td{padding:5px 8px;border:.5px solid #e5e7eb;text-align:center;color:#111827}
+.months-tbl td input{width:100%;border:none;background:transparent;outline:none;font-family:inherit;font-size:10.5px;text-align:center}
+.highlight{background:#f0fdf4 !important}
+.highlight input{color:#16a34a;font-weight:700}
+.highlight-green-bg{background:#16a34a !important}
+.highlight-green-bg input{color:#fff !important;font-weight:700}
+
+/* Line chart */
+.line-chart-box{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px}
+
+/* Buttons */
+.add-btn{display:flex;align-items:center;gap:4px;padding:6px 10px;font-size:10px;color:#16a34a;cursor:pointer;background:#fff;border:none;border-top:1px solid #f0f0f0;width:100%;font-family:inherit}
+.add-btn:hover{background:#f0fdf4}
+.send-bar{display:flex;justify-content:flex-end;padding:10px 0 2px}
+.btn-send{padding:7px 20px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-send:hover{background:#14532d}
+
+/* Rec */
+.rec-box{border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;background:#fff;margin-bottom:10px}
+.rec-head{background:#f9fafb;padding:7px 12px;font-size:11px;font-weight:700;color:#374151;border-bottom:1px solid #e5e7eb}
+.rec-box textarea{width:100%;border:none;background:transparent;outline:none;font-family:inherit;font-size:12px;color:#111827;resize:vertical;min-height:70px;padding:8px 12px;direction:rtl;display:block}
+
+.footer{display:flex;align-items:center;gap:5px;padding:8px 14px;border-top:1px solid #e5e7eb;justify-content:flex-end;background:#fff;margin-top:12px}
+.f-s{width:18px;height:18px;border-radius:50%;font-size:8px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center}
+.f-997{background:#dc2626;color:#fff;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700}
+.msg{margin:10px 14px;padding:9px 14px;border-radius:8px;font-size:12px;font-weight:700;border:1px solid}
+.msg.ok{background:#f0fdf4;color:#166534;border-color:#86efac}
+.msg.err{background:#fef2f2;color:#991b1b;border-color:#fca5a5}
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div>
+    <div class="page-title">إدارة التطوع</div>
+    <div class="page-sub">SAUDI RED CRESCENT AUTHORITY — هيئة الهلال الأحمر السعودي</div>
+  </div>
+  <svg width="38" height="38" viewBox="0 0 44 44">
+    <circle cx="22" cy="22" r="20" fill="#fef2f2" stroke="#fca5a5" stroke-width="1"/>
+    <path d="M22 7 a15 15 0 0 1 0 30 a11 11 0 0 0 0-30z" fill="#991b1b"/>
+    <polygon points="26,13 27.2,16.8 31,16.8 28,19.2 29.2,23 26,20.8 22.8,23 24,19.2 21,16.8 24.8,16.8" fill="#991b1b"/>
+  </svg>
+</div>
+
+<?php if($msg): ?>
+<div class="msg <?= str_contains($msg,'تم')||str_contains($msg,'نجاح')?'ok':'err' ?>"><?= h($msg) ?></div>
+<?php endif; ?>
+
+<div class="tabs-bar">
+  <a class="tab-link <?= $tab==='activities'?'active':'' ?>" href="?tab=activities">📋 المشاركات التطوعية</a>
+  <a class="tab-link <?= $tab==='stats'?'active':'' ?>" href="?tab=stats">📊 إحصائيات المتطوعين</a>
+  <a class="tab-link <?= $tab==='rec'?'active':'' ?>" href="?tab=rec">📌 التوصيات</a>
+</div>
+
+<!-- ===== المشاركات التطوعية ===== -->
+<?php if($tab==='activities'): ?>
+<div class="section">
+  <div class="main-title">المشاركات التطوعية (الفعاليات-المشاركات-يونيو 2026)</div>
+
+  <div class="charts-row">
+    <div class="chart-card">
+      <div class="chart-card-title">المشاركات التطوعية خلال شهر أبريل</div>
+      <div style="position:relative;width:100%;height:160px">
+        <canvas id="aprBar" role="img" aria-label="شارت المشاركات التطوعية خلال أبريل"></canvas>
+      </div>
+      <div class="chart-legend">
+        <div class="leg-item"><div class="leg-box" style="background:#16a34a"></div>عدد المتطوعين</div>
+        <div class="leg-item"><div class="leg-box" style="background:#4ade80;border:1px solid #16a34a"></div>عدد الفعاليات</div>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-card-title">إحصائية الساعات التطوعية وفريق التطوع</div>
+      <div style="position:relative;width:100%;height:160px">
+        <canvas id="hoursBar" role="img" aria-label="شارت إحصائية الساعات التطوعية"></canvas>
+      </div>
+      <div class="chart-legend">
+        <div class="leg-item"><div class="leg-box" style="background:#16a34a"></div>الساعات/العدد</div>
+      </div>
+    </div>
+  </div>
+
+  <form method="post">
+  <input type="hidden" name="action" value="send_activities">
+
+  <!-- جدول المشاركات القائمة -->
+  <div class="tbl-section-title">المشاركات التطوعية القائمة</div>
+  <div class="tbl-wrap">
+    <table id="actTable">
+      <thead><tr>
+        <th style="width:22px">#</th>
+        <th>نوع البرنامج</th>
+        <th>اسم البرنامج</th>
+        <th>المجموع</th>
+      </tr></thead>
+      <tbody>
+        <?php foreach($activitiesData as $i=>$r): ?>
+        <tr>
+          <td class="nc"><?= $i+1 ?></td>
+          <td><input name="prog_type[]" value="<?= h($r[0]) ?>"></td>
+          <td><input name="prog_name[]" value="<?= h($r[1]) ?>" style="text-align:right"></td>
+          <td><input name="prog_total[]" value="<?= h($r[2]) ?>"></td>
+        </tr>
+        <?php endforeach; ?>
+        <?php for($i=count($activitiesData);$i<6;$i++): ?>
+        <tr>
+          <td class="nc"><?= $i+1 ?></td>
+          <td><input name="prog_type[]" placeholder="—"></td>
+          <td><input name="prog_name[]" placeholder="—" style="text-align:right"></td>
+          <td><input name="prog_total[]" placeholder="—"></td>
+        </tr>
+        <?php endfor; ?>
+      </tbody>
+    </table>
+    <button type="button" class="add-btn" onclick="addActRow()">+ إضافة برنامج</button>
+  </div>
+
+  <!-- جدول التنوع -->
+  <div class="diversity-title">التنوع بالفرص التطوعية</div>
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="red-th">الإسعافي</th>
+          <th class="blue-th">التنظيم</th>
+          <th class="blue-th">مساعدات إنسانية</th>
+          <th class="blue-th">البيئة</th>
+          <th class="blue-th">الإعلامي</th>
+          <th class="blue-th">الإداري</th>
+          <th class="green-th">الإجمالي</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><input name="div_amb" value="✓" style="color:#16a34a;font-weight:700"></td>
+          <td><input name="div_org" placeholder="—"></td>
+          <td><input name="div_hum" placeholder="—"></td>
+          <td><input name="div_env" placeholder="—"></td>
+          <td><input name="div_med" placeholder="—"></td>
+          <td><input name="div_adm" value="✓" style="color:#16a34a;font-weight:700"></td>
+          <td><input name="div_total" value="20%" style="color:#16a34a;font-weight:700"></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="send-bar"><button type="submit" class="btn-send">إرسال للأدمن</button></div>
+  </form>
+</div>
+<div class="footer">
+  <div class="f-s" style="background:#1da1f2">t</div>
+  <div class="f-s" style="background:#e1306c">i</div>
+  <div class="f-s" style="background:#1877f2">f</div>
+  <div class="f-997">997</div>
+</div>
+<?php endif; ?>
+
+<!-- ===== إحصائيات المتطوعين ===== -->
+<?php if($tab==='stats'): ?>
+<div class="section">
+  <form method="post">
+  <input type="hidden" name="action" value="send_stats">
+  <div class="stats-grid">
+
+    <!-- يمين: الدوائر + شارت الخط -->
+    <div>
+      <div class="donuts-row">
+        <!-- دائرة 1 -->
+        <div class="donut-wrap">
+          <div style="position:relative;width:150px;height:150px">
+            <canvas id="donut1" role="img" aria-label="دائرة نسبة المشاركين"></canvas>
+            <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:14px;font-weight:700;color:#374151;text-align:center">50%<br><span style="font-size:9px">50%</span></div>
+          </div>
+          <div class="chart-legend" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:4px">
+            <div class="leg-item"><div class="leg-box" style="background:#1d4ed8;border-radius:50%"></div>نسبة المشاركين خلال الفئة</div>
+            <div class="leg-item"><div class="leg-box" style="background:#dc2626;border-radius:50%"></div>نسبة غير المشاركين خلال الفئة</div>
+          </div>
+        </div>
+        <!-- دائرة 2 -->
+        <div class="donut-wrap">
+          <div style="position:relative;width:150px;height:150px">
+            <canvas id="donut2" role="img" aria-label="دائرة إجمالي المشاركين"></canvas>
+            <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:14px;font-weight:700;color:#374151;text-align:center">3<br><span style="font-size:9px">13</span></div>
+          </div>
+          <div class="chart-legend" style="flex-direction:column;align-items:flex-start;gap:4px;margin-top:4px">
+            <div class="leg-item"><div class="leg-box" style="background:#1d4ed8;border-radius:50%"></div>إجمالي المشاركين</div>
+            <div class="leg-item"><div class="leg-box" style="background:#dc2626;border-radius:50%"></div>إجمالي غير المشاركين</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- شارت الخط الشهري -->
+      <div class="line-chart-box">
+        <div style="position:relative;width:100%;height:130px">
+          <canvas id="lineChart" role="img" aria-label="شارت خطي لنشاط المتطوعين شهرياً"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- يسار: الجداول الإحصائية -->
+    <div>
+      <!-- لوحة متابعة الكفاءة الفردية -->
+      <div class="side-card">
+        <div class="side-card-title red">لوحة متابعة الكفاءة الفردية</div>
+        <table class="months-tbl">
+          <thead><tr><th>القيم</th><th>الفئة</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><input name="total_hours" value="26"></td>
+              <td>إبريل</td>
+            </tr>
+            <tr>
+              <td><input name="total_vol" value="36"></td>
+              <td>(إجمالي) المتطوعين خلال الفئة</td>
+            </tr>
+            <tr>
+              <td><input name="total_hours2" value="13"></td>
+              <td>(إجمالي) المتطوعين خلال الفئة</td>
+            </tr>
+            <tr class="highlight-green-bg" style="background:#16a34a">
+              <td style="background:#16a34a"><input name="eff_pct" value="%36" style="color:#fff;font-weight:700"></td>
+              <td style="background:#f0fdf4;color:#166534;font-weight:700">نسبة المتطوعين خلال الفئة</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- جدول نسب الأشهر -->
+      <div class="side-card">
+        <div class="side-card-title gray">نسبة المشاركة الشهرية</div>
+        <table class="months-tbl">
+          <thead><tr><th>القيمة</th><th>الفئة</th></tr></thead>
+          <tbody>
+            <?php foreach($months as $mi=>$mname): ?>
+            <tr class="<?= $mi===3?'highlight':'' ?>">
+              <td class="<?= $mi===3?'highlight':'' ?>"><input name="<?= $monthKeys[$mi] ?>" value="<?= $monthValues[$mi] ?>"></td>
+              <td><?= h($mname) ?></td>
+            </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- إجماليات -->
+      <div class="side-card">
+        <table class="months-tbl">
+          <tbody>
+            <tr><td><input name="total_participants" value="1883"></td><td>إجمالي المشاركين</td></tr>
+            <tr><td><input name="avg_rate" value="50.2"></td><td>كل نسبة مشاركة</td></tr>
+            <tr><td><input name="period_total" value="104.6"></td><td>القسمة خلال الفئة</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="send-bar"><button type="submit" class="btn-send">إرسال للأدمن</button></div>
+  </form>
+</div>
+<div class="footer">
+  <div class="f-s" style="background:#1da1f2">t</div>
+  <div class="f-s" style="background:#e1306c">i</div>
+  <div class="f-s" style="background:#1877f2">f</div>
+  <div class="f-997">997</div>
+</div>
+<?php endif; ?>
+
+<!-- ===== التوصيات ===== -->
+<?php if($tab==='rec'): ?>
+<div class="section">
+  <form method="post">
+  <input type="hidden" name="action" value="save_rec">
+  <div class="rec-box"><div class="rec-head">⭐ التوصيات</div><textarea name="rec_main" placeholder="التوصيات..."><?= h($lastRec['rec_main']??'') ?></textarea></div>
+  <div class="rec-box"><div class="rec-head">⚠️ المخاطر والتحديات</div><textarea name="rec_risks" placeholder="المخاطر..."><?= h($lastRec['rec_risks']??'') ?></textarea></div>
+  <div class="rec-box"><div class="rec-head">✅ الإجراءات المقترحة</div><textarea name="rec_actions" placeholder="الإجراءات..."><?= h($lastRec['rec_actions']??'') ?></textarea></div>
+  <div class="rec-box"><div class="rec-head">📝 ملاحظات عامة</div><textarea name="rec_notes" placeholder="ملاحظات..."><?= h($lastRec['rec_notes']??'') ?></textarea></div>
+  <div class="send-bar"><button type="submit" class="btn-send">💾 حفظ التوصيات</button></div>
+  </form>
+</div>
+<?php endif; ?>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+let an = <?= count($activitiesData) + 3 ?>;
+
+function addActRow(){
+  an++;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td class="nc">${an}</td>
+    <td><input name="prog_type[]" placeholder="—"></td>
+    <td><input name="prog_name[]" placeholder="—" style="text-align:right"></td>
+    <td><input name="prog_total[]" placeholder="—"></td>`;
+  document.querySelector('#actTable tbody')?.appendChild(tr);
+}
+
+function makeBar(id, labels, datasets, h) {
+  const el = document.getElementById(id); if(!el) return;
+  el.parentElement.style.height = (h||160) + 'px';
+  new Chart(el, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { size: 8 }, maxRotation: 45, autoSkip: false }, grid: { display: false } },
+        y: { ticks: { font: { size: 8 } }, grid: { color: '#f3f4f6' } }
+      }
+    }
+  });
+}
+
+function makeDonut(id, data, colors, h) {
+  const el = document.getElementById(id); if(!el) return;
+  el.parentElement.style.height = (h||150) + 'px';
+  new Chart(el, {
+    type: 'doughnut',
+    data: { datasets: [{ data, backgroundColor: colors, borderWidth: 3, borderColor: '#fff' }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '60%', plugins: { legend: { display: false } } }
+  });
+}
+
+function makeLine(id, labels, data, h) {
+  const el = document.getElementById(id); if(!el) return;
+  el.parentElement.style.height = (h||130) + 'px';
+  new Chart(el, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: '#1d4ed8',
+        backgroundColor: 'rgba(29,78,216,0.08)',
+        borderWidth: 2,
+        pointRadius: 3,
+        pointBackgroundColor: '#1d4ed8',
+        tension: 0.3,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { font: { size: 8 } }, grid: { display: false } },
+        y: { ticks: { font: { size: 8 } }, grid: { color: '#f3f4f6' } }
+      }
+    }
+  });
+}
+
+setTimeout(() => {
+  // شارت المشاركات التطوعية أبريل
+  makeBar('aprBar',
+    ['المشاركة','السلامة','التطوعية','النادية'],
+    [
+      { label: 'عدد المتطوعين', data: [5,5,6,3], backgroundColor: '#16a34a', barPercentage: .6, categoryPercentage: .7 },
+      { label: 'عدد الفعاليات', data: [800,600,1000,200], backgroundColor: '#4ade80', barPercentage: .6, categoryPercentage: .7 }
+    ], 160);
+
+  // شارت الساعات
+  makeBar('hoursBar',
+    ['إجمالي أيام العمل في المجتمع','إجمالي عدد المتطوعين','مجموع المنازل والكيانات','إجمالي عدد يونيو'],
+    [{ label: 'الساعات', data: [16681,60,60,0], backgroundColor: '#16a34a', barPercentage: .5, categoryPercentage: .7 }],
+    160);
+
+  // الدوائر
+  makeDonut('donut1', [50, 50], ['#1d4ed8','#dc2626'], 150);
+  makeDonut('donut2', [3, 13], ['#1d4ed8','#dc2626'], 150);
+
+  // شارت الخط الشهري
+  makeLine('lineChart',
+    ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر'],
+    [0, 0, 0, 0.4, 0.5, 0.6, 0, 0, 0, 0, 0, 0],
+    130);
+}, 200);
+</script>
+
+</body>
+</html>

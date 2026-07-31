@@ -1,0 +1,479 @@
+<?php
+declare(strict_types=1);
+session_start();
+require_once __DIR__ . '/db.php';
+
+// حماية: تسجيل الدخول مطلوب
+if (empty($_SESSION['op_user_id'])) {
+    header("Location: operational_login.php");
+    exit;
+}
+
+function h($v): string {
+    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+}
+
+$msg = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+
+    if ($action === 'send_support1') {
+        try {
+            $stmt = pdo()->prepare("INSERT INTO tech_support_devices (device_type,fault,location,action_taken,notes,created_by,created_at) VALUES (?,?,?,?,?,?,NOW())");
+            $saved = 0;
+            foreach (($_POST['device_type'] ?? []) as $i => $dt) {
+                $fault = trim($_POST['fault'][$i] ?? '');
+                $loc   = trim($_POST['location'][$i] ?? '');
+                if ($fault === '' && $loc === '') continue;
+                $stmt->execute([$dt, $fault, $loc, $_POST['action_taken'][$i] ?? '', $_POST['notes'][$i] ?? '', $_SESSION['op_user_id'] ?? null]);
+                $saved++;
+            }
+            $msg = $saved > 0 ? "تم إرسال $saved طلب دعم فني للخدمات التقنية" : 'لم يتم إدخال بيانات';
+        } catch (Throwable $e) { $msg = 'خطأ: ' . $e->getMessage(); }
+    }
+
+    if ($action === 'send_support2') {
+        try {
+            $stmt = pdo()->prepare("INSERT INTO tech_support_requests (classification,requester,department,description,status,request_date,notes,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,NOW())");
+            $saved = 0;
+            foreach (($_POST['classification'] ?? []) as $i => $cls) {
+                $desc = trim($_POST['description'][$i] ?? '');
+                if ($desc === '') continue;
+                $stmt->execute([$cls, $_POST['requester'][$i] ?? '', $_POST['department'][$i] ?? '', $desc, $_POST['status'][$i] ?? '', $_POST['request_date'][$i] ?? '', $_POST['notes'][$i] ?? '', $_SESSION['op_user_id'] ?? null]);
+                $saved++;
+            }
+            $msg = $saved > 0 ? "تم إرسال $saved طلب دعم فني" : 'لم يتم إدخال بيانات';
+        } catch (Throwable $e) { $msg = 'خطأ: ' . $e->getMessage(); }
+    }
+
+    if ($action === 'send_comm') {
+        try {
+            $stmt = pdo()->prepare("INSERT INTO tech_communication_lines (line_name,line_status,notes,created_by,created_at) VALUES (?,?,?,?,NOW())");
+            foreach (($_POST['line_name'] ?? []) as $i => $name) {
+                $stmt->execute([$name, $_POST['line_status'][$i] ?? '1', $_POST['line_notes'][$i] ?? '', $_SESSION['op_user_id'] ?? null]);
+            }
+            $msg = 'تم إرسال بيانات وسائل الاتصال';
+        } catch (Throwable $e) { $msg = 'خطأ: ' . $e->getMessage(); }
+    }
+
+    if ($action === 'send_devices') {
+        try {
+            $stmt = pdo()->prepare("INSERT INTO tech_operational_devices (device_name,total_count,working,backup,broken,operational_pct,created_by,created_at) VALUES (?,?,?,?,?,?,?,NOW())");
+            foreach (($_POST['device_name'] ?? []) as $i => $name) {
+                $stmt->execute([$name, $_POST['total_count'][$i] ?? 0, $_POST['working'][$i] ?? 0, $_POST['backup'][$i] ?? 0, $_POST['broken'][$i] ?? 0, $_POST['operational_pct'][$i] ?? '', $_SESSION['op_user_id'] ?? null]);
+            }
+            $msg = 'تم إرسال بيانات الأجهزة التشغيلية';
+        } catch (Throwable $e) { $msg = 'خطأ: ' . $e->getMessage(); }
+    }
+
+    if ($action === 'save_rec') {
+        try {
+            pdo()->prepare("INSERT INTO tech_recommendations (rec_main,rec_risks,rec_actions,rec_notes,created_by,created_at) VALUES (?,?,?,?,?,NOW())")
+                 ->execute([$_POST['rec_main'] ?? '', $_POST['rec_risks'] ?? '', $_POST['rec_actions'] ?? '', $_POST['rec_notes'] ?? '', $_SESSION['op_user_id'] ?? null]);
+            $msg = 'تم حفظ التوصيات بنجاح';
+        } catch (Throwable $e) { $msg = 'خطأ: ' . $e->getMessage(); }
+    }
+}
+
+$tab = $_GET['tab'] ?? 'support1';
+$lastRec = [];
+try { $lastRec = pdo()->query("SELECT * FROM tech_recommendations ORDER BY id DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: []; } catch (Throwable $e) {}
+
+$commLines = ['الهاتف الثابت','الهاتف المشفر(همس)','الخط الساخن المباشر','الجوال','الثريا','الفاكس المشفر(الأمين)','تترا','نظام الاتصال المرئي (بروق)','البريد الالكتروني','خط ساخن حرس الحدود','خط ساخن ارامكو','الفاكس'];
+$commStatuses = [1,1,1,1,0,1,1,0,1,1,1,1];
+$commNotes = ['','','','','معلق','','','بانتظار ربط النظام مع شبكة وزارة الداخلية (My Phone)','','','',''];
+
+$devicesData = [
+    ['التابلت',98,41,50,6,'38.6%'],
+    ['الشبكة اللاسلكية',26,9,0,17,'34.6%'],
+    ['شبكة الأنترنت',26,26,0,0,'100%'],
+    ['التترا',230,123,106,1,'53.5%'],
+];
+?>
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>قسم التقنية</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:#fdf6f4;direction:rtl;font-size:13px}
+
+.page-header{background:#fff;border-bottom:1px solid #fde8e0;padding:10px 16px;display:flex;align-items:center;justify-content:space-between}
+.org-ar{font-size:12px;font-weight:700;color:#111827}
+.org-en{font-size:9px;color:#9ca3af;letter-spacing:.3px}
+
+.tabs-bar{display:flex;border-bottom:1px solid #fde8e0;background:#fff9f8;padding:0 12px;overflow-x:auto}
+.tab-link{padding:9px 14px;font-size:11px;font-weight:700;color:#6b7280;border-bottom:2px solid transparent;margin-bottom:-1px;text-decoration:none;white-space:nowrap;display:inline-block}
+.tab-link.active{color:#dc2626;border-bottom-color:#dc2626}
+.tab-link:hover:not(.active){color:#374151}
+
+.section{padding:14px}
+.section-title{font-size:16px;font-weight:700;color:#dc2626;text-align:center;border:1.5px solid #dc2626;border-radius:8px;padding:8px 24px;margin:0 auto 18px;display:table}
+.section-title-bar{display:flex;align-items:center;gap:8px;margin-bottom:16px}
+.section-title-bar .bar{width:4px;height:22px;background:#dc2626;border-radius:2px}
+.section-title-bar h2{font-size:15px;font-weight:700;color:#dc2626}
+
+/* إحصاءات أفقية */
+.stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.stat-pill{border-radius:999px;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.stat-pill.p1{background:#dc2626;color:#fff}
+.stat-pill.p2{background:#ef4444;color:#fff}
+.stat-pill.p3{background:#fca5a5;color:#7f1d1d}
+.stat-pill.p4{background:#fecaca;color:#7f1d1d}
+.stat-pill-label{font-size:11px;font-weight:700}
+.stat-pill-icon{width:28px;height:28px;background:rgba(255,255,255,.25);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px}
+.stat-val-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+.stat-val-box{border:1.5px solid #fde8e0;border-radius:8px;padding:6px 4px;text-align:center;font-size:20px;font-weight:700;color:#111827;min-height:38px;background:#fff;width:100%;outline:none;font-family:inherit}
+.stat-val-box:focus{border-color:#dc2626;background:#fef2f2}
+
+/* الجداول */
+.tbl-wrap{overflow-x:auto;border:1px solid #fde8e0;border-radius:10px;background:#fff}
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{background:#f5c5b5;color:#7f1d1d;padding:8px;font-weight:700;text-align:center;border-left:1px solid #fca5a5;white-space:nowrap}
+th:last-child{border-left:none}
+td{padding:7px 8px;border-bottom:1px solid #fde8e0;color:#111827;text-align:center;vertical-align:middle;border-left:1px solid #fde8e0;background:#fff8f6}
+td:last-child{border-left:none}
+tbody tr:nth-child(even) td{background:#fff}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:#fef2f2}
+td input,td textarea,td select{width:100%;border:none;background:transparent;outline:none;font-family:inherit;font-size:11px;color:#111827;text-align:center;resize:none}
+td textarea{min-height:32px;line-height:1.3;text-align:right}
+td input:focus,td textarea:focus{background:#fef2f2;border-radius:3px}
+.device-badge{background:#dc2626;color:#fff;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:700;white-space:nowrap;display:inline-block}
+.device-badge.light{background:#fca5a5;color:#7f1d1d}
+.num-col{color:#6b7280;font-size:10px}
+
+.add-row-btn{display:flex;align-items:center;gap:5px;padding:7px 12px;font-size:11px;color:#dc2626;cursor:pointer;background:#fff;border:none;border-top:1px solid #fde8e0;width:100%;font-family:inherit;font-weight:700}
+.add-row-btn:hover{background:#fef2f2}
+.send-bar{display:flex;justify-content:flex-end;padding:12px 0 2px}
+.btn-send{padding:7px 18px;background:#166534;color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.btn-send:hover{background:#14532d}
+
+/* وسائل الاتصال */
+.status-ok{color:#16a34a;font-size:18px;font-weight:700}
+.status-err{color:#dc2626;font-size:18px;font-weight:700}
+
+/* الأجهزة التشغيلية */
+.dev-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:6px;align-items:center}
+.dev-head{border-radius:999px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;gap:4px;font-size:10px;font-weight:700}
+.dev-head.red{background:#dc2626;color:#fff}
+.dev-head.salmon{background:#fca5a5;color:#7f1d1d}
+.dev-label{border-radius:999px;padding:6px 12px;font-size:11px;font-weight:700;text-align:center}
+.dev-label.red{background:#dc2626;color:#fff}
+.dev-label.salmon{background:#fca5a5;color:#7f1d1d}
+.dev-label.pink{background:#fee2e2;color:#991b1b}
+.dev-val{border:1.5px solid #fde8e0;border-radius:999px;padding:5px 8px;text-align:center;font-size:13px;font-weight:700;color:#111827;background:#fff;width:100%;outline:none;font-family:inherit}
+.dev-val:focus{border-color:#dc2626;background:#fef2f2}
+.dev-pct{border-radius:999px;padding:5px 8px;text-align:center;font-size:12px;font-weight:700;background:#fee2e2;color:#991b1b;width:100%;border:none;outline:none;font-family:inherit}
+.dev-pct:focus{outline:1px solid #dc2626}
+
+/* التوصيات */
+.rec-box{border:1px solid #fde8e0;border-radius:10px;overflow:hidden;background:#fff;margin-bottom:12px}
+.rec-box-head{background:#fef2f2;padding:8px 14px;font-size:12px;font-weight:700;color:#7f1d1d;border-bottom:1px solid #fde8e0}
+.rec-box-body textarea{width:100%;border:none;background:transparent;outline:none;font-family:inherit;font-size:13px;color:#111827;resize:vertical;min-height:80px;padding:10px 14px;direction:rtl;display:block}
+
+.footer{display:flex;align-items:center;gap:16px;padding:10px 16px;border-top:1px solid #fde8e0;justify-content:flex-end;background:#fff9f8}
+.footer span{font-size:11px;color:#9ca3af}
+
+.msg{margin:10px 14px;padding:10px 14px;border-radius:8px;font-size:13px;font-weight:700;border:1px solid}
+.msg.ok{background:#f0fdf4;color:#166534;border-color:#86efac}
+.msg.warn{background:#fffbeb;color:#92400e;border-color:#fcd34d}
+.msg.err{background:#fef2f2;color:#991b1b;border-color:#fca5a5}
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div>
+    <div class="org-ar">هيئة الهلال الأحمر السعودي</div>
+    <div class="org-en">SAUDI RED CRESCENT AUTHORITY</div>
+  </div>
+  <svg width="38" height="38" viewBox="0 0 44 44">
+    <circle cx="22" cy="22" r="20" fill="#fef2f2" stroke="#fca5a5" stroke-width="1"/>
+    <path d="M22 7 a15 15 0 0 1 0 30 a11 11 0 0 0 0-30z" fill="#991b1b"/>
+    <polygon points="26,13 27.2,16.8 31,16.8 28,19.2 29.2,23 26,20.8 22.8,23 24,19.2 21,16.8 24.8,16.8" fill="#991b1b"/>
+  </svg>
+</div>
+
+<?php if ($msg): ?>
+<div class="msg <?= str_contains($msg,'نجاح')||str_contains($msg,'تم')?'ok':(str_contains($msg,'خطأ')?'err':'warn') ?>">
+  <?= h($msg) ?>
+</div>
+<?php endif; ?>
+
+<div class="tabs-bar">
+  <a class="tab-link <?= $tab==='support1'?'active':'' ?>" href="?tab=support1">📋 دعم فني - الأجهزة</a>
+  <a class="tab-link <?= $tab==='support2'?'active':'' ?>" href="?tab=support2">📝 طلبات الدعم الفني</a>
+  <a class="tab-link <?= $tab==='comm'?'active':'' ?>" href="?tab=comm">📡 وسائل الاتصال</a>
+  <a class="tab-link <?= $tab==='devices'?'active':'' ?>" href="?tab=devices">💻 الأجهزة التشغيلية</a>
+  <a class="tab-link <?= $tab==='rec'?'active':'' ?>" href="?tab=rec">📌 التوصيات</a>
+</div>
+
+<!-- ===== دعم فني - الأجهزة ===== -->
+<?php if ($tab === 'support1'): ?>
+<div class="section">
+  <div class="section-title">طلبات الدعم الفني للخدمات التقنية</div>
+
+  <form method="post">
+  <input type="hidden" name="action" value="send_support1">
+
+  <!-- إحصاءات -->
+  <div class="stat-row">
+    <div class="stat-pill p1"><span class="stat-pill-label">اجمالي الطلبات</span><div class="stat-pill-icon">🔴</div></div>
+    <div class="stat-pill p2"><span class="stat-pill-label">القائمة</span><div class="stat-pill-icon">📅</div></div>
+    <div class="stat-pill p3"><span class="stat-pill-label">لم يتم الحل</span><div class="stat-pill-icon">⚠️</div></div>
+    <div class="stat-pill p4"><span class="stat-pill-label">تم الحل</span><div class="stat-pill-icon">✅</div></div>
+  </div>
+  <div class="stat-val-row">
+    <input class="stat-val-box" name="stat_total"    value="15" type="number" min="0">
+    <input class="stat-val-box" name="stat_active"   value="2"  type="number" min="0">
+    <input class="stat-val-box" name="stat_unsolved" value="6"  type="number" min="0">
+    <input class="stat-val-box" name="stat_solved"   value="6"  type="number" min="0">
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:22px">م</th>
+          <th>نوع الجهاز</th>
+          <th>العطل</th>
+          <th>موقع الجهاز</th>
+          <th>الأجراء المتخذ</th>
+          <th>الملاحظات</th>
+        </tr>
+      </thead>
+      <tbody id="s1body">
+        <?php
+        $s1data = [
+          ['تابلت','كسر بالشاشة التابلت','مركز الزهمة','باستلام صدى العامة لعمل تسعبرة والإصلاح','عدد(1)'],
+          ['تابلت','عطل في شاشة اللمس','مركز الورود','باستلام صدى العامة لعمل تسعبرة والإصلاح','عدد(1)'],
+          ['تابلت','كسر بالشاشة التابلت','مركز المصيف','باستلام صدى العامة لعمل تسعبرة والإصلاح','عدد(1)'],
+          ['تابلت','عطل في شاشة اللمس','تجمع تبوك','باستلام صدى العامة لعمل تسعبرة والإصلاح','عدد(1)'],
+          ['تابلت','كسر بالشاشة التابلت','تجمع تبوك','باستلام صدى العامة لعمل تسعبرة والإصلاح','عدد(1)'],
+          ['تابلت','عطل في الشحن وارتفاع الحرارة','تجمع تبوك','باستلام صدى العامة لعمل تسعبرة والإصلاح','عدد(1)'],
+        ];
+        foreach ($s1data as $i => $row): ?>
+        <tr>
+          <td class="num-col"><?= $i+1 ?></td>
+          <td><input name="device_type[]" value="<?= h($row[0]) ?>"></td>
+          <td><input name="fault[]" value="<?= h($row[1]) ?>"></td>
+          <td><input name="location[]" value="<?= h($row[2]) ?>"></td>
+          <td><textarea name="action_taken[]" rows="2"><?= h($row[3]) ?></textarea></td>
+          <td><input name="notes[]" value="<?= h($row[4]) ?>"></td>
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+    <button type="button" class="add-row-btn" onclick="addS1Row()">+ إضافة صف</button>
+  </div>
+  <div class="send-bar"><button type="submit" class="btn-send">إرسال للأدمن</button></div>
+  </form>
+</div>
+<div class="footer"><span>الإنسانية</span><span>الشغف</span><span>الإتقان</span></div>
+<?php endif; ?>
+
+<!-- ===== طلبات الدعم الفني ===== -->
+<?php if ($tab === 'support2'): ?>
+<div class="section">
+  <div class="section-title-bar"><div class="bar"></div><h2>طلبات الدعم الفني</h2></div>
+  <form method="post">
+  <input type="hidden" name="action" value="send_support2">
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:22px">م</th>
+          <th>التصنيف</th>
+          <th>مقدم الطلب</th>
+          <th>القسم</th>
+          <th>الوصف</th>
+          <th style="width:75px">الحالة</th>
+          <th style="width:100px">تاريخ الطلب</th>
+          <th>الملاحظات</th>
+        </tr>
+      </thead>
+      <tbody id="s2body">
+        <?php
+        $s2data = [
+          ['الأنظمة والحسابات','مجتنى محمد ابراهيم الخزعل','تجمع تبوك الاسعاف الاول','تعليق في التاب والتحرك على ضغط اي زر مما سبب تأخير في احتساب زمن التحرك في بلاغ رقم 207','لم يتم الحل','2024/10/2م','صيانة خارجية',true],
+          ['الأجهزة وملحقاتها','مبارك سليمان عبد العطوي','القيادة الميدانية تبوك','كسر في شاشة التابلت_التابع لمركز المصيف (سقط اثناء مباشرة الفرقة حالة اسعافية)','لم يتم الحل','2024/10/19','صيانة خارجية',false],
+          ['الأجهزة وملحقاتها','مبارك سليمان عبد العطوي','تبوك القيادة الميدانية تبوك','شاشة اللمس لا تعمل من الجهة اليمنى','لم يتم الحل','2024/11/03','صيانة خارجية',false],
+          ['الأجهزة وملحقاتها','قاسم محمد حسين الحمود','تجمع تبوك الاسعاف الاول','توقف عمل الشحن تابلت وذلك بسبب حساس ارتفاع الحرارة او انخفاضها','لم يتم الحل','2024/11/05','صيانة خارجية',false],
+          ['الأجهزة وملحقاتها','قاسم محمد حسين الحمود','القيادة الميدانية تبوك','كسر وعطل في شاشة اللمس','لم يتم الحل','2025/1/16','صيانة خارجية',false],
+          ['الأجهزة وملحقاتها','فهد محمد احمد شويكان','القيادة الميدانية تبوك','سقوط التاب عند مباشرة بلاغ 345','لم يتم الحل','2025/02/06','صيانة خارجية',false],
+          ['الأنظمة والحسابات','ابراهيم سليمان سالم العطوي','مركز تجمع تبوك الاسعاف الاول','لا يوجد تنبيه عند ورود البلاغ','تم الحل','01:52:57 02-06-2026','',true],
+          ['الأنظمة والحسابات','سليم سليمان عبد الجوهري','قطاع تبوك الاسعاف الثالث','تعليق اثناء الاستجابة لحاله','تم الحل','16:51:55 01-06-2026','',true],
+          ['الأنظمة والحسابات','سعود عارف شعير العتري','قسم تشغيل وصيانة المرافق','طلب باركود جديد لتفعيل التحقق الثاني','تم الحل','10:28:58 03-06-2026','',true],
+          ['الأنظمة والحسابات','شعبان صالح حسين المسلماني','قطاع تبوك الاسعاف الرابع','عند استلام البلاغ والتحرك لم يعمل التاب تحرك','قيد العمل','09:01:53 10-06-2026','',true],
+        ];
+        foreach ($s2data as $i => $row):
+          $statusColor = $row[4]==='تم الحل' ? '#166534' : ($row[4]==='قيد العمل' ? '#92400e' : '#dc2626');
+        ?>
+        <tr>
+          <td class="num-col"><?= $i+1 ?></td>
+          <td><span class="device-badge <?= $row[7]?'':'light' ?>"><?= h($row[0]) ?></span></td>
+          <td><input name="requester[]" value="<?= h($row[1]) ?>"></td>
+          <td><input name="department[]" value="<?= h($row[2]) ?>"></td>
+          <td><textarea name="description[]" rows="2"><?= h($row[3]) ?></textarea></td>
+          <td><input name="status[]" value="<?= h($row[4]) ?>" style="color:<?= $statusColor ?>"></td>
+          <td><input name="request_date[]" value="<?= h($row[5]) ?>"></td>
+          <td><input name="notes[]" value="<?= h($row[6]) ?>"></td>
+          <input type="hidden" name="classification[]" value="<?= h($row[0]) ?>">
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+    <button type="button" class="add-row-btn" onclick="addS2Row()">+ إضافة صف</button>
+  </div>
+  <div class="send-bar"><button type="submit" class="btn-send">إرسال للأدمن</button></div>
+  </form>
+</div>
+<div class="footer"><span>الإنسانية</span><span>الشغف</span><span>الإتقان</span></div>
+<?php endif; ?>
+
+<!-- ===== وسائل الاتصال ===== -->
+<?php if ($tab === 'comm'): ?>
+<div class="section">
+  <div class="section-title-bar"><div class="bar"></div><h2>وسائل الاتصال</h2></div>
+  <form method="post">
+  <input type="hidden" name="action" value="send_comm">
+  <div class="tbl-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:22px">م</th>
+          <th>الخطوط</th>
+          <th style="width:80px">حالة الخط</th>
+          <th>الملاحظات</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($commLines as $i => $line): ?>
+        <tr>
+          <td class="num-col"><?= $i+1 ?></td>
+          <td style="text-align:right">
+            <span style="background:#fde8e0;color:#7f1d1d;padding:4px 14px;border-radius:999px;font-size:11px;font-weight:700"><?= h($line) ?></span>
+            <input type="hidden" name="line_name[]" value="<?= h($line) ?>">
+          </td>
+          <td style="text-align:center">
+            <select name="line_status[]" style="border:none;background:transparent;font-size:14px;cursor:pointer;outline:none">
+              <option value="1" <?= $commStatuses[$i]?'selected':'' ?>>✔ يعمل</option>
+              <option value="0" <?= !$commStatuses[$i]?'selected':'' ?>>✖ لا يعمل</option>
+            </select>
+          </td>
+          <td><input name="line_notes[]" value="<?= h($commNotes[$i]) ?>" style="color:<?= $commNotes[$i]?'#1d4ed8':'#111827' ?>"></td>
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+  <div class="send-bar"><button type="submit" class="btn-send">إرسال للأدمن</button></div>
+  </form>
+</div>
+<div class="footer"><span>الإنسانية</span><span>الشغف</span><span>الإتقان</span></div>
+<?php endif; ?>
+
+<!-- ===== الأجهزة التشغيلية ===== -->
+<?php if ($tab === 'devices'): ?>
+<div class="section">
+  <div class="section-title-bar"><div class="bar"></div><h2>الوضع التشغيلي للأجهزة التقنية</h2></div>
+  <form method="post">
+  <input type="hidden" name="action" value="send_devices">
+
+  <div class="dev-grid" style="margin-bottom:8px">
+    <div class="dev-head red">النسبة التشغيلية <span>📊</span></div>
+    <div class="dev-head salmon">المتعطلة <span>⚠️</span></div>
+    <div class="dev-head salmon">الاحتياطية <span>🔄</span></div>
+    <div class="dev-head salmon">العاملة <span>✅</span></div>
+    <div class="dev-head salmon">العدد الإجمالي <span>📋</span></div>
+    <div class="dev-head red">الجهاز <span>💻</span></div>
+  </div>
+
+  <?php
+  $devLabels = ['red','salmon','salmon','pink'];
+  foreach ($devicesData as $di => $dev): ?>
+  <div class="dev-grid" style="margin-bottom:6px">
+    <input class="dev-pct" name="operational_pct[]" value="<?= h($dev[5]) ?>">
+    <input class="dev-val" name="broken[]"      type="number" value="<?= $dev[4] ?>">
+    <input class="dev-val" name="backup[]"      type="number" value="<?= $dev[3] ?>">
+    <input class="dev-val" name="working[]"     type="number" value="<?= $dev[2] ?>">
+    <input class="dev-val" name="total_count[]" type="number" value="<?= $dev[1] ?>">
+    <div class="dev-label <?= $devLabels[$di] ?>"><?= h($dev[0]) ?>
+      <input type="hidden" name="device_name[]" value="<?= h($dev[0]) ?>">
+    </div>
+  </div>
+  <?php endforeach; ?>
+
+  <div class="send-bar"><button type="submit" class="btn-send">إرسال للأدمن</button></div>
+  </form>
+</div>
+<div class="footer"><span>الإنسانية</span><span>الشغف</span><span>الإتقان</span></div>
+<?php endif; ?>
+
+<!-- ===== التوصيات ===== -->
+<?php if ($tab === 'rec'): ?>
+<div class="section">
+  <form method="post">
+  <input type="hidden" name="action" value="save_rec">
+  <div class="rec-box">
+    <div class="rec-box-head">⭐ التوصيات</div>
+    <div class="rec-box-body"><textarea name="rec_main" placeholder="اكتب التوصيات هنا..."><?= h($lastRec['rec_main']??'') ?></textarea></div>
+  </div>
+  <div class="rec-box">
+    <div class="rec-box-head">⚠️ المخاطر والتحديات</div>
+    <div class="rec-box-body"><textarea name="rec_risks" placeholder="المخاطر والتحديات..."><?= h($lastRec['rec_risks']??'') ?></textarea></div>
+  </div>
+  <div class="rec-box">
+    <div class="rec-box-head">✅ الإجراءات المقترحة</div>
+    <div class="rec-box-body"><textarea name="rec_actions" placeholder="الإجراءات المقترحة..."><?= h($lastRec['rec_actions']??'') ?></textarea></div>
+  </div>
+  <div class="rec-box">
+    <div class="rec-box-head">📝 ملاحظات عامة</div>
+    <div class="rec-box-body"><textarea name="rec_notes" placeholder="ملاحظات عامة..."><?= h($lastRec['rec_notes']??'') ?></textarea></div>
+  </div>
+  <div class="send-bar"><button type="submit" class="btn-send">💾 حفظ التوصيات</button></div>
+  </form>
+</div>
+<div class="footer"><span>الإنسانية</span><span>الشغف</span><span>الإتقان</span></div>
+<?php endif; ?>
+
+<script>
+let s1n = 6, s2n = 10;
+
+function addS1Row(){
+  s1n++;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td class="num-col">${s1n}</td>
+    <td><input name="device_type[]" placeholder="—"></td>
+    <td><input name="fault[]" placeholder="—"></td>
+    <td><input name="location[]" placeholder="—"></td>
+    <td><textarea name="action_taken[]" rows="2" placeholder="..."></textarea></td>
+    <td><input name="notes[]" placeholder="—"></td>
+  `;
+  document.getElementById('s1body').appendChild(tr);
+}
+
+function addS2Row(){
+  s2n++;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td class="num-col">${s2n}</td>
+    <td><input name="classification[]" placeholder="—"></td>
+    <td><input name="requester[]" placeholder="—"></td>
+    <td><input name="department[]" placeholder="—"></td>
+    <td><textarea name="description[]" rows="2" placeholder="..."></textarea></td>
+    <td><input name="status[]" placeholder="—"></td>
+    <td><input name="request_date[]" placeholder="—"></td>
+    <td><input name="notes[]" placeholder="—"></td>
+  `;
+  document.getElementById('s2body').appendChild(tr);
+}
+</script>
+
+</body>
+</html>
