@@ -10,4 +10,5 @@ COPY . /var/www/html/
 RUN rm -f /var/www/html/portal_db.sql "/var/www/html/الملف التشغيلي.pdf" || true
 
 # Railway يمرر رقم المنفذ في متغير PORT
-CMD ["/bin/sh", "-c", "sed -i \"s/Listen 80/Listen ${PORT:-80}/\" /etc/apache2/ports.conf && sed -i \"s/:80>/:${PORT:-80}>/\" /etc/apache2/sites-available/000-default.conf && apache2-foreground"]
+# إصلاح تعارض وحدات MPM ثم ضبط المنفذ والتشغيل
+CMD ["/bin/sh", "-c", "a2dismod -f mpm_event mpm_worker 2>/dev/null; a2enmod mpm_prefork 2>/dev/null; sed -i \"s/Listen 80/Listen ${PORT:-80}/\" /etc/apache2/ports.conf && sed -i \"s/:80>/:${PORT:-80}>/\" /etc/apache2/sites-available/000-default.conf && apache2-foreground"]
